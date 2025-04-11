@@ -9,7 +9,7 @@ from tqdm import tqdm
 # ----------------------
 # Data Loading
 # ----------------------
-games = pd.read_csv("data/games.csv")
+games = pd.read_csv("data/games.csv", usecols=["gameId", "homeTeamAbbr", "visitorTeamAbbr"], dtype=dtype_games)
 players = pd.read_csv("data/players.csv")
 plays = pd.read_csv("data/plays.csv")
 # For simplicity, here we load one tracking week.

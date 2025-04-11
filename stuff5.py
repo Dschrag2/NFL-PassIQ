@@ -5,16 +5,25 @@ from torch_geometric.data import Data, DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
 import torch.nn as nn
 from tqdm import tqdm
+import concurrent.futures
 
 # ----------------------
 # Data Loading
 # ----------------------
-games = pd.read_csv("data/games.csv")
+games = pd.read_csv("data/games.csv", usecols=["gameId", "homeTeamAbbr", "visitorTeamAbbr"])
 players = pd.read_csv("data/players.csv")
 plays = pd.read_csv("data/plays.csv")
 # For simplicity, here we load one tracking week.
 tracking_data = pd.read_csv("data/tracking_week_1.csv")
 player_plays = pd.read_csv("data/player_play.csv")
+
+throw_events = ["pass_forward", "pass_shovel"]
+# Filter the events and save to a new CSV file.
+throw_tracking_data = tracking_data[tracking_data["event"].isin(throw_events)]
+throw_tracking_data.to_csv("data/throw_tracking_data.csv", index=False)
+tracking_data = pd.read_csv("data/throw_tracking_data.csv")
+
+
 
 # ----------------------
 # Helper Functions
@@ -93,28 +102,30 @@ def build_graph_from_throw(row):
     Label: Binary label indicating whether the targeted receiver caught the ball.
     """
     # Get play and game information for metadata adjustments
-    curr_play = plays[(plays["gameId"] == row.gameId) & (plays["playId"] == row.playId)]
-    curr_game = games[games["gameId"] == row.gameId]
+    curr_play = plays[(plays["gameId"] == row["gameId"]) & (plays["playId"] == row["playId"])]
+    curr_game = games[games["gameId"] == row["gameId"]]
     
     # Filter tracking data to only the throw frame based on event.
     # Use proper parentheses to group events.
-    throw_events = ["pass_forward", "pass_shovel"]
+    
     curr_tracking = tracking_data[
-        (tracking_data["gameId"] == row.gameId) &
-        (tracking_data["playId"] == row.playId) &
+        (tracking_data["gameId"] == row["gameId"]) &
+        (tracking_data["playId"] == row["playId"]) &
         (tracking_data["event"].isin(throw_events))
     ]
     # Remove rows for the football
     curr_tracking = curr_tracking[curr_tracking["club"] != "football"]
+    # print(curr_tracking.size)
     
     # Get receiver candidates from player_plays.
     # Here we filter to players running routes as a proxy for eligible pass targets.
     Recs = player_plays[
-        (player_plays["gameId"] == row.gameId) &
-        (player_plays["playId"] == row.playId) &
+        (player_plays["gameId"] == row["gameId"]) &
+        (player_plays["playId"] == row["playId"]) &
         (player_plays["wasRunningRoute"] != "NA")
     ]
     
+    print(Recs.size)
     if Recs.empty or curr_tracking.empty:
         return None
     
@@ -175,20 +186,34 @@ def build_graph_from_throw(row):
 
     return graph
 
+def process_row(row):
+    try:
+        g = build_graph_from_throw(row)
+        return g
+    except Exception as e:
+        print(f"Error in play {row.playId}: {e}")
+        return None
+
+
+
 # ----------------------
 # Build the Dataset
 # ----------------------
-graph_data = []
-print("Building dataset from throw frames...")
-for i, row in tqdm(player_plays.drop_duplicates(subset=["gameId", "playId"]).iterrows()):
-    try:
-        g = build_graph_from_throw(row)
-        if g is not None:
-            graph_data.append(g)
-    except Exception as e:
-        print(f"Error in play {row.playId}: {e}")
-    # break
+# graph_data = []
+# print("Building dataset from throw frames...")
+# for i, row in tqdm(player_plays.drop_duplicates(subset=["gameId", "playId"]).iterrows()):
+#     try:
+#         g = build_graph_from_throw(row)
+#         if g is not None:
+#             graph_data.append(g)
+#     except Exception as e:
+#         print(f"Error in play {row.playId}: {e}")
+#     # break
+# print(player_plays.drop_duplicates(subset=["gameId", "playId"]).to_dict(orient="records")[56])
+with concurrent.futures.ProcessPoolExecutor() as executor:
+    graph_data = list(tqdm(executor.map(process_row, player_plays.drop_duplicates(subset=["gameId", "playId"]).to_dict(orient="records")), total=len(player_plays.drop_duplicates(subset=["gameId", "playId"]))))
 
+graph_data = [g for g in graph_data if g is not None]
 print(f"Created {len(graph_data)} graph samples.")
 
 # ----------------------
